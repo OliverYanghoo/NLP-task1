@@ -1,0 +1,56 @@
+import csv
+import json
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+from sklearn.metrics import accuracy_score, confusion_matrix, f1_score
+
+
+def load_all_results(results_dir: Path):
+    methods = ['binary_bow', 'word_frequency', 'average_embedding', 'glove', 'bert']
+    records = {}
+    for name in methods:
+        path = results_dir / f'{name}.json'
+        if not path.exists():
+            continue
+        records[name] = json.loads(path.read_text(encoding='utf-8'))
+    return records
+
+
+def validate_records(results_dir: Path, dataset_path: Path):
+    split = json.loads((results_dir / 'split.json').read_text(encoding='utf-8'))
+    frame = pd.read_csv(dataset_path)
+    truths = frame.iloc[split['test']].label.astype(str).tolist()
+    labels = split['labels']
+
+    summary = []
+    for name in ['binary_bow', 'word_frequency', 'average_embedding', 'glove', 'bert']:
+        scores_path = results_dir / f'{name}.json'
+        if not scores_path.exists():
+            continue
+        record = json.loads(scores_path.read_text(encoding='utf-8'))
+        predictions = pd.read_csv(results_dir / f'{name}_predictions.csv')
+        if predictions['true'].tolist() != truths:
+            raise ValueError(f'Test labels do not align for {name}.')
+        expected_accuracy = accuracy_score(predictions['true'], predictions['predicted'])
+        expected_f1 = f1_score(predictions['true'], predictions['predicted'], labels=labels, average='macro', zero_division=0)
+        if not np.isclose(record['test']['accuracy'], expected_accuracy):
+            raise ValueError(f'Accuracy mismatch in {name}.')
+        if not np.isclose(record['test']['macro_f1'], expected_f1):
+            raise ValueError(f'Macro-F1 mismatch in {name}.')
+        if not np.array_equal(np.array(record['confusion_matrix']), confusion_matrix(predictions['true'], predictions['predicted'], labels=labels)):
+            raise ValueError(f'Confusion matrix mismatch in {name}.')
+        summary.append({'method': name, 'accuracy': record['test']['accuracy'], 'macro_f1': record['test']['macro_f1']})
+
+    with (results_dir / 'summary.csv').open('w', encoding='utf-8', newline='') as output:
+        writer = csv.DictWriter(output, fieldnames=['method', 'accuracy', 'macro_f1'])
+        writer.writeheader()
+        writer.writerows(summary)
+
+    print('Validation passed for all available methods.')
+    return summary
+
+
+if __name__ == '__main__':
+    validate_records(Path('results'), Path('sample_data/news_sample.csv'))
